@@ -1,12 +1,14 @@
 const { readFileSync } = require("fs");
 const path = require("path");
-require("dotenv").config({ path: path.join(__dirname, "..", ".env.local") });
+require("dotenv").config({
+  path: path.join(__dirname, "..", ".env.local"),
+  override: true,
+});
 
-const { Pool } = require("pg");
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const { createPoolFromDatabaseUrl } = require("./create-pg-pool");
 
 async function main() {
+  const pool = await createPoolFromDatabaseUrl();
   const schema = readFileSync(
     path.join(__dirname, "..", "src", "lib", "schema.sql"),
     "utf8"

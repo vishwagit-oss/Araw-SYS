@@ -1,24 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { query } from "@/lib/db";
-
-async function findShipIdByNameOrLogin(nameOrLogin: string): Promise<string | null> {
-  const v = nameOrLogin.trim();
-  if (!v) return null;
-  const r = await query(
-    `SELECT id FROM ships
-     WHERE role = 'ship'
-       AND (lower(name) = lower($1) OR lower(login_id) = lower($1))
-     LIMIT 1`,
-    [v]
-  );
-  return r.rows[0]?.id ?? null;
-}
-
-async function getShipNameById(shipId: string): Promise<string> {
-  const r = await query(`SELECT name FROM ships WHERE id = $1 LIMIT 1`, [shipId]);
-  return r.rows[0]?.name ?? "";
-}
+import { findShipIdByNameOrLogin, getShipNameById } from "@/lib/ships-lookup";
+import {
+  buildCashReceivingPayloadFromDischargeForm,
+  createPendingProposal,
+  findMatchingPendingProposalForManualCashDischarge,
+  syncCashDischargeAfterPut,
+} from "@/lib/mirror-proposals";
 
 export async function GET(request: Request) {
   const session = await getSession();
@@ -28,15 +17,14 @@ export async function GET(request: Request) {
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-  const r = await query(
-    `SELECT * FROM cash_discharge WHERE id = $1 AND ship_id = $2`,
-    [id, session.ship.id]
-  );
+  const r = await query(`SELECT * FROM cash_discharge WHERE id = $1 AND ship_id = $2`, [
+    id,
+    session.ship.id,
+  ]);
 
   if (session.ship.role === "admin") {
     const rAdmin = await query(`SELECT * FROM cash_discharge WHERE id = $1`, [id]);
-    if (rAdmin.rows.length === 0)
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (rAdmin.rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(rAdmin.rows[0]);
   }
 
@@ -55,8 +43,7 @@ export async function POST(request: Request) {
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json();
-  const shipId =
-    session.ship.role === "admin" && body.ship_id ? body.ship_id : session.ship.id;
+  const shipId = session.ship.role === "admin" && body.ship_id ? body.ship_id : session.ship.id;
 
   const toName = String(body.to_ship ?? "").trim();
   const inserted = await query(
@@ -76,44 +63,44 @@ export async function POST(request: Request) {
   );
 
   const cashDischargeId = inserted.rows[0]?.id as string | undefined;
+  let matchPendingProposalId: string | null = null;
 
-  // Mirroring: if TO matches a known ship, create a mirrored cash_receiving for that ship.
   if (cashDischargeId) {
-    const targetShipId = await findShipIdByNameOrLogin(toName);
-    if (targetShipId) {
+    const otherShipId = await findShipIdByNameOrLogin(toName);
+    if (otherShipId && otherShipId !== shipId) {
+      matchPendingProposalId = await findMatchingPendingProposalForManualCashDischarge({
+        postingShipId: shipId,
+        initiatorShipId: otherShipId,
+        date: body.date || null,
+        amount_aed: body.amount_aed != null ? Number(body.amount_aed) : null,
+      });
+    }
+
+    if (!matchPendingProposalId && otherShipId && otherShipId !== shipId) {
       const sellerShipName = await getShipNameById(shipId);
-
-      const mirrorInserted = await query(
-        `INSERT INTO cash_receiving
-          (ship_id, date, from_ship, location, remark, amount_aed, attachment_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id`,
-        [
-          targetShipId,
-          body.date || null,
-          sellerShipName || null,
-          body.location || null,
-          body.remark || null,
-          body.amount_aed != null ? Number(body.amount_aed) : null,
-          body.attachment_url || null,
-        ]
-      );
-
-      const cashReceivingId = mirrorInserted.rows[0]?.id as string | undefined;
-      if (cashReceivingId) {
-        await query(
-          `INSERT INTO mirrors (source_type, source_id, target_type, target_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (source_type, source_id) DO UPDATE SET
-             target_type = EXCLUDED.target_type,
-             target_id = EXCLUDED.target_id`,
-          ["cash_discharge", cashDischargeId, "cash_receiving", cashReceivingId]
-        );
-      }
+      await createPendingProposal({
+        initiatorShipId: shipId,
+        counterpartShipId: otherShipId,
+        sourceType: "cash_discharge",
+        sourceId: cashDischargeId,
+        targetType: "cash_receiving",
+        payload: buildCashReceivingPayloadFromDischargeForm({
+          date: body.date || null,
+          location: body.location || null,
+          remark: body.remark || null,
+          amount_aed: body.amount_aed != null ? Number(body.amount_aed) : undefined,
+          attachment_url: body.attachment_url || null,
+          fromShipName: sellerShipName,
+        }),
+      });
     }
   }
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({
+    success: true,
+    id: cashDischargeId,
+    ...(matchPendingProposalId && { matchPendingProposalId }),
+  });
 }
 
 export async function PUT(request: Request) {
@@ -157,64 +144,11 @@ export async function PUT(request: Request) {
     ]
   );
 
-  // Re-sync mirrored cash_receiving (if TO is a known ship).
   const updated = await query(`SELECT * FROM cash_discharge WHERE id = $1 LIMIT 1`, [id]);
   const row = updated.rows[0];
   if (row) {
-    const toName = String(row.to_ship ?? "").trim();
-    const sellerShipId = row.ship_id as string;
-    const sellerShipName = await getShipNameById(sellerShipId);
-
-    const existingMirror = await query(
-      `SELECT target_id FROM mirrors
-       WHERE source_type = $1 AND source_id = $2 AND target_type = $3
-       LIMIT 1`,
-      ["cash_discharge", id, "cash_receiving"]
-    );
-    const existingReceivingId = existingMirror.rows[0]?.target_id as string | undefined;
-
-    const targetShipId = await findShipIdByNameOrLogin(toName);
-
-    if (targetShipId) {
-      if (existingReceivingId) {
-        await query(`DELETE FROM cash_receiving WHERE id = $1`, [existingReceivingId]);
-      }
-      const mirrorInserted = await query(
-        `INSERT INTO cash_receiving
-          (ship_id, date, from_ship, location, remark, amount_aed, attachment_url)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id`,
-        [
-          targetShipId,
-          row.date || null,
-          sellerShipName || null,
-          row.location || null,
-          row.remark || null,
-          row.amount_aed != null ? Number(row.amount_aed) : null,
-          row.attachment_url || null,
-        ]
-      );
-
-      const cashReceivingId = mirrorInserted.rows[0]?.id as string | undefined;
-      if (cashReceivingId) {
-        await query(
-          `INSERT INTO mirrors (source_type, source_id, target_type, target_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (source_type, source_id) DO UPDATE SET
-             target_type = EXCLUDED.target_type,
-             target_id = EXCLUDED.target_id`,
-          ["cash_discharge", id, "cash_receiving", cashReceivingId]
-        );
-      }
-    } else if (existingReceivingId) {
-      await query(`DELETE FROM cash_receiving WHERE id = $1`, [existingReceivingId]);
-      await query(
-        `DELETE FROM mirrors WHERE source_type = $1 AND source_id = $2 AND target_type = $3`,
-        ["cash_discharge", id, "cash_receiving"]
-      );
-    }
+    await syncCashDischargeAfterPut(row);
   }
 
   return NextResponse.json({ success: true });
 }
-

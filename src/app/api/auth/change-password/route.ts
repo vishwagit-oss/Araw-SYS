@@ -1,14 +1,19 @@
 import { NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
 import { getSession } from "@/lib/auth";
 import { query } from "@/lib/db";
 import nodemailer from "nodemailer";
+import { loginIdToSupabaseEmail, supabaseAuthConfigured } from "@/lib/ship-auth-email";
+import { createSupabaseRouteHandlerClient } from "@/lib/supabase/server";
 
 export async function POST(request: Request) {
   try {
     const session = await getSession();
-    if (!session) {
+    if (!session || session.sessionId === "demo") {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    if (!supabaseAuthConfigured()) {
+      return NextResponse.json({ error: "Supabase Auth is not configured." }, { status: 503 });
     }
 
     const body = await request.json();
@@ -22,31 +27,39 @@ export async function POST(request: Request) {
       );
     }
 
-    const r = await query(
-      "SELECT password_hash FROM ships WHERE id = $1",
-      [session.ship.id]
-    );
-    if (r.rows.length === 0) {
-      return NextResponse.json({ error: "Ship not found" }, { status: 401 });
+    const rowCheck = await query(`SELECT auth_user_id FROM ships WHERE id = $1`, [
+      session.ship.id,
+    ]);
+    if (rowCheck.rows.length === 0 || !rowCheck.rows[0].auth_user_id) {
+      return NextResponse.json({ error: "Ship not linked to Supabase Auth" }, { status: 400 });
     }
 
-    const match = await bcrypt.compare(old_password, r.rows[0].password_hash);
-    if (!match) {
+    const response = NextResponse.json({
+      success: true,
+      message: "Password changed. Admin will be emailed (if email is configured).",
+    });
+
+    const supabase = createSupabaseRouteHandlerClient(response);
+    const email = loginIdToSupabaseEmail(session.ship.login_id);
+
+    const { error: signErr } = await supabase.auth.signInWithPassword({
+      email,
+      password: old_password,
+    });
+    if (signErr) {
       return NextResponse.json({ error: "Current password is incorrect" }, { status: 400 });
     }
 
-    const password_hash = await bcrypt.hash(new_password, 10);
-    await query("UPDATE ships SET password_hash = $1 WHERE id = $2", [
-      password_hash,
+    const { error: updErr } = await supabase.auth.updateUser({ password: new_password });
+    if (updErr) {
+      console.error("[change-password]", updErr);
+      return NextResponse.json({ error: "Failed to update password" }, { status: 400 });
+    }
+
+    await query(`INSERT INTO password_change_log (ship_id, admin_notified) VALUES ($1, true)`, [
       session.ship.id,
     ]);
 
-    await query(
-      "INSERT INTO password_change_log (ship_id, admin_notified) VALUES ($1, true)",
-      [session.ship.id]
-    );
-
-    // Notify admin via email (optional). The DB log still records the change.
     try {
       const adminEmail = process.env.ADMIN_EMAIL;
       const smtpHost = process.env.SMTP_HOST;
@@ -77,10 +90,7 @@ export async function POST(request: Request) {
       console.error("[Sea Regent] Failed to send admin email:", emailErr);
     }
 
-    return NextResponse.json({
-      success: true,
-      message: "Password changed. Admin will be emailed (if email is configured).",
-    });
+    return response;
   } catch (e) {
     console.error(e);
     return NextResponse.json({ error: "Failed to change password" }, { status: 500 });

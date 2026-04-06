@@ -1,15 +1,17 @@
 -- Sea Regent: ships (login per ship), sessions, data tables, password change log
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Ships: each has login_id + password. One admin.
+-- Ships: login_id is what users type; Supabase Auth uses a synthetic email per login_id (see SHIP_AUTH_EMAIL_DOMAIN).
 CREATE TABLE IF NOT EXISTS ships (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name VARCHAR(100) NOT NULL,
   login_id VARCHAR(100) NOT NULL UNIQUE,
-  password_hash VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255),
+  auth_user_id UUID UNIQUE,
   role VARCHAR(20) NOT NULL DEFAULT 'ship' CHECK (role IN ('ship', 'admin')),
   created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_ships_auth_user_id ON ships(auth_user_id);
 
 -- Active sessions for "who is logged in"
 CREATE TABLE IF NOT EXISTS sessions (
@@ -180,3 +182,49 @@ CREATE TABLE IF NOT EXISTS mirrors (
   created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(source_type, source_id)
 );
+
+-- Cross-ship transfers: counterpart or admin must confirm before mirror row is created
+CREATE TABLE IF NOT EXISTS mirror_proposals (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  initiator_ship_id UUID NOT NULL REFERENCES ships(id) ON DELETE CASCADE,
+  counterpart_ship_id UUID NOT NULL REFERENCES ships(id) ON DELETE CASCADE,
+  source_type VARCHAR(50) NOT NULL,
+  source_id UUID NOT NULL,
+  target_type VARCHAR(50) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'approved', 'rejected', 'superseded')),
+  confirmed_by VARCHAR(20)
+    CHECK (confirmed_by IS NULL OR confirmed_by IN ('counterparty', 'admin')),
+  confirmed_at TIMESTAMPTZ,
+  target_id UUID,
+  payload JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mirror_proposals_one_pending_per_source
+  ON mirror_proposals (source_type, source_id)
+  WHERE (status = 'pending');
+CREATE INDEX IF NOT EXISTS idx_mirror_proposals_counterpart_pending
+  ON mirror_proposals (counterpart_ship_id) WHERE (status = 'pending');
+CREATE INDEX IF NOT EXISTS idx_mirror_proposals_initiator
+  ON mirror_proposals (initiator_ship_id);
+
+CREATE TABLE IF NOT EXISTS ship_notifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  ship_id UUID NOT NULL REFERENCES ships(id) ON DELETE CASCADE,
+  proposal_id UUID REFERENCES mirror_proposals(id) ON DELETE SET NULL,
+  kind VARCHAR(40) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  body TEXT,
+  read_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ship_notifications_ship_created
+  ON ship_notifications (ship_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ship_notifications_unread
+  ON ship_notifications (ship_id) WHERE (read_at IS NULL);
+
+-- Existing deployments: add Supabase Auth link + nullable password (idempotent)
+ALTER TABLE ships ADD COLUMN IF NOT EXISTS auth_user_id UUID UNIQUE;
+CREATE INDEX IF NOT EXISTS idx_ships_auth_user_id ON ships(auth_user_id);
+ALTER TABLE ships ALTER COLUMN password_hash DROP NOT NULL;

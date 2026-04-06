@@ -15,6 +15,8 @@ import {
   X,
   Shield,
   Key,
+  ClipboardCheck,
+  Bell,
 } from "lucide-react";
 
 const navItems = [
@@ -35,6 +37,11 @@ const navItems = [
     icon: Truck,
   },
   { href: "/dashboard/result", label: "Result", icon: BarChart3 },
+  {
+    href: "/dashboard/pending-confirmations",
+    label: "Pending confirmations",
+    icon: ClipboardCheck,
+  },
 ];
 
 export function DashboardNav() {
@@ -43,6 +50,23 @@ export function DashboardNav() {
   const displayName = user?.name ?? "User";
   const isAdmin = user?.role === "admin";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [notifUnread, setNotifUnread] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/notifications?count=1", { credentials: "include" });
+        const data = await res.json();
+        if (!cancelled && typeof data.unread === "number") setNotifUnread(data.unread);
+      } catch {
+        if (!cancelled) setNotifUnread(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -115,7 +139,20 @@ export function DashboardNav() {
           {user?.login_id && (
             <p className="text-sm text-slate-500 truncate">ID: {user.login_id}</p>
           )}
-          <div className="flex flex-wrap gap-2 mt-3">
+          <div className="flex flex-wrap gap-2 mt-3 items-center">
+            <Link
+              href="/dashboard/pending-confirmations"
+              onClick={closeMobile}
+              className="flex items-center gap-1.5 text-sm text-sky-600 hover:text-sky-700 font-medium"
+            >
+              <Bell className="w-3.5 h-3.5 shrink-0" />
+              Alerts
+              {notifUnread > 0 ? (
+                <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center">
+                  {notifUnread > 99 ? "99+" : notifUnread}
+                </span>
+              ) : null}
+            </Link>
             <Link
               href="/dashboard/profile"
               onClick={closeMobile}

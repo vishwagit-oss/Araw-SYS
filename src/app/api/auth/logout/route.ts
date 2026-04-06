@@ -1,18 +1,18 @@
 import { NextResponse } from "next/server";
-import { getSessionIdFromCookie, clearSessionCookie, clearDemoCookie } from "@/lib/auth";
-import { query } from "@/lib/db";
+import { clearSessionCookie, clearDemoCookie } from "@/lib/auth.cookies";
+import { supabaseAuthConfigured } from "@/lib/ship-auth-email";
+import { createSupabaseRouteHandlerClient } from "@/lib/supabase/server";
 
 export async function POST() {
-  const sessionId = await getSessionIdFromCookie();
-  if (sessionId && sessionId !== "demo") {
-    try {
-      await query("DELETE FROM sessions WHERE id = $1", [sessionId]);
-    } catch {
-      // ignore
-    }
+  const response = NextResponse.json({ success: true });
+
+  if (supabaseAuthConfigured()) {
+    const supabase = createSupabaseRouteHandlerClient(response);
+    await supabase.auth.signOut();
   }
-  const res = NextResponse.json({ success: true });
-  res.headers.set("Set-Cookie", clearSessionCookie());
-  res.headers.append("Set-Cookie", clearDemoCookie());
-  return res;
+
+  response.headers.append("Set-Cookie", clearSessionCookie());
+  response.headers.append("Set-Cookie", clearDemoCookie());
+
+  return response;
 }

@@ -1,9 +1,7 @@
 import { cookies } from "next/headers";
 import { query } from "./db";
-
-const SESSION_COOKIE = "sea_regent_session";
-const DEMO_COOKIE = "sea_regent_demo";
-const SESSION_DAYS = 7;
+import { createSupabaseServerReadonlyClient } from "./supabase/server";
+import { DEMO_COOKIE_NAME, SESSION_COOKIE_NAME } from "./auth.cookies";
 
 export interface ShipUser {
   id: string;
@@ -12,7 +10,7 @@ export interface ShipUser {
   role: "ship" | "admin";
 }
 
-/** Demo users (no database required). For demo only. */
+/** Demo users (no database / no Supabase required). */
 export const DEMO_LOGINS: Record<string, { password: string; ship: ShipUser }> = {
   demo: {
     password: "demo123",
@@ -24,14 +22,9 @@ export const DEMO_LOGINS: Record<string, { password: string; ship: ShipUser }> =
   },
 };
 
-export async function getSessionIdFromCookie(): Promise<string | null> {
-  const c = await cookies();
-  return c.get(SESSION_COOKIE)?.value ?? null;
-}
-
 export async function getSession(): Promise<{ ship: ShipUser; sessionId: string } | null> {
   const c = await cookies();
-  const demoPayload = c.get(DEMO_COOKIE)?.value;
+  const demoPayload = c.get(DEMO_COOKIE_NAME)?.value;
   if (demoPayload) {
     try {
       const ship = JSON.parse(Buffer.from(demoPayload, "base64").toString()) as ShipUser;
@@ -43,21 +36,27 @@ export async function getSession(): Promise<{ ship: ShipUser; sessionId: string 
     }
   }
 
-  const sessionId = await getSessionIdFromCookie();
-  if (!sessionId) return null;
-
   try {
+    let supabase;
+    try {
+      supabase = await createSupabaseServerReadonlyClient();
+    } catch {
+      return null;
+    }
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return null;
+
     const r = await query(
-      `SELECT s.id, s.name, s.login_id, s.role
-       FROM sessions ss
-       JOIN ships s ON s.id = ss.ship_id
-       WHERE ss.id = $1 AND ss.expires_at > now()`,
-      [sessionId]
+      `SELECT id, name, login_id, role FROM ships WHERE auth_user_id = $1 LIMIT 1`,
+      [user.id]
     );
     if (r.rows.length === 0) return null;
+
     const row = r.rows[0];
     return {
-      sessionId,
+      sessionId: user.id,
       ship: {
         id: row.id,
         name: row.name,
@@ -70,21 +69,14 @@ export async function getSession(): Promise<{ ship: ShipUser; sessionId: string 
   }
 }
 
-export function sessionCookieHeader(sessionId: string, maxAgeDays: number = SESSION_DAYS): string {
-  const maxAge = maxAgeDays * 24 * 60 * 60;
-  return `${SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
-}
+export {
+  sessionCookieHeader,
+  clearSessionCookie,
+  demoCookieHeader,
+  clearDemoCookie,
+} from "./auth.cookies";
 
-export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
-}
-
-export function demoCookieHeader(ship: ShipUser): string {
-  const payload = Buffer.from(JSON.stringify(ship)).toString("base64");
-  const maxAge = SESSION_DAYS * 24 * 60 * 60;
-  return `${DEMO_COOKIE}=${payload}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
-}
-
-export function clearDemoCookie(): string {
-  return `${DEMO_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+export async function getSessionIdFromCookie(): Promise<string | null> {
+  const c = await cookies();
+  return c.get(SESSION_COOKIE_NAME)?.value ?? null;
 }

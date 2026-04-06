@@ -8,10 +8,13 @@
     "start": "next start",
     "lint": "next lint",
     "db:init": "node scripts/init-db.js",
-    "db:seed": "node scripts/seed-ships.js"
+    "db:seed": "node scripts/seed-ships.js",
+    "db:debug-url": "node scripts/debug-database-url.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.995.0",
+    "@supabase/ssr": "^0.10.0",
+    "@supabase/supabase-js": "^2.101.0",
     "amazon-cognito-identity-js": "^6.3.16",
     "bcryptjs": "^2.4.3",
     "dotenv": "^17.3.1",

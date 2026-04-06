@@ -23,9 +23,14 @@ function getConnectionConfig() {
 }
 
 const { connectionString: poolConnectionString, ssl: poolSsl } = getConnectionConfig();
+
+// Single shared pool per serverless instance; use provider "pooler" / transaction URL on Vercel when available.
 const pool = new Pool({
   connectionString: poolConnectionString,
   ssl: poolConnectionString ? poolSsl : undefined,
+  max: Number(process.env.PG_POOL_MAX ?? 5),
+  idleTimeoutMillis: 20_000,
+  connectionTimeoutMillis: 15_000,
 });
 
 export async function query(text: string, params?: unknown[]) {
