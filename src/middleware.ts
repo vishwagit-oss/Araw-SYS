@@ -1,12 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { supabaseAnonKey } from "@/lib/ship-auth-email";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
+import { supabaseAnonKey, supabaseProjectUrl } from "@/lib/ship-auth-email";
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
+  const supabaseUrl = supabaseProjectUrl();
   if (!supabaseUrl || !supabaseAnonKey()) {
     return response;
   }

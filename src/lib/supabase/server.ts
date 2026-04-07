@@ -1,12 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { NextResponse } from "next/server";
-import { supabaseAnonKey } from "@/lib/ship-auth-email";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
+import { supabaseAnonKey, supabaseProjectUrl } from "@/lib/ship-auth-email";
 
 /** Attach cookie writes to this response (e.g. login / logout / password change). */
 export function createSupabaseRouteHandlerClient(response: NextResponse) {
+  const supabaseUrl = supabaseProjectUrl();
   if (!supabaseUrl || !supabaseAnonKey()) {
     throw new Error("Supabase env vars are not set");
   }
@@ -27,6 +26,7 @@ export function createSupabaseRouteHandlerClient(response: NextResponse) {
 
 /** Read session only (middleware does refreshes). setAll is a no-op. */
 export async function createSupabaseServerReadonlyClient() {
+  const supabaseUrl = supabaseProjectUrl();
   if (!supabaseUrl || !supabaseAnonKey()) {
     throw new Error("Supabase env vars are not set");
   }
