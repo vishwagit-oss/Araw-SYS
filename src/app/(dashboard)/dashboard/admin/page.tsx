@@ -27,12 +27,41 @@ interface PasswordChangeEntry {
   changed_at: string;
 }
 
+/** Cash line from /api/result/all (row shape from Postgres + ship_name join). */
+interface CashLedgerRow {
+  id: string;
+  ship_id: string;
+  ship_name?: string;
+  date?: string | null;
+  from_ship?: string | null;
+  to_ship?: string | null;
+  location?: string | null;
+  remark?: string | null;
+  amount_aed?: string | number | null;
+  created_at?: string;
+}
+
+function formatCellDate(value: string | null | undefined): string {
+  if (value == null || value === "") return "—";
+  const d = String(value).slice(0, 10);
+  return d || "—";
+}
+
+function formatAed(value: string | number | null | undefined): string {
+  if (value == null || value === "") return "—";
+  const n = typeof value === "number" ? value : Number(value);
+  if (Number.isNaN(n)) return String(value);
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export default function AdminPage() {
   const { user } = useAuth();
   const router = useRouter();
   const [sessions, setSessions] = useState<ActiveSession[]>([]);
   const [passwordLog, setPasswordLog] = useState<PasswordChangeEntry[]>([]);
   const [chartData, setChartData] = useState<{ name: string; count: number }[]>([]);
+  const [cashReceiving, setCashReceiving] = useState<CashLedgerRow[]>([]);
+  const [cashDischarge, setCashDischarge] = useState<CashLedgerRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -53,6 +82,8 @@ export default function AdminPage() {
         if (dataRes.ok) {
           const d = await dataRes.json();
           setChartData(d.chartData ?? []);
+          setCashReceiving(Array.isArray(d.cash_receiving) ? d.cash_receiving : []);
+          setCashDischarge(Array.isArray(d.cash_discharge) ? d.cash_discharge : []);
         }
       } catch {
         // ignore
@@ -71,7 +102,9 @@ export default function AdminPage() {
     <div className="space-y-8">
       <div>
         <h1 className="text-xl sm:text-2xl font-bold text-slate-900">Admin</h1>
-        <p className="text-slate-600 mt-1 text-sm">Who is logged in, password changes, and overview.</p>
+        <p className="text-slate-600 mt-1 text-sm">
+          Who is logged in, password changes, cash ledgers (from / to counterpart), and overview.
+        </p>
       </div>
 
       {loading ? (
@@ -111,6 +144,106 @@ export default function AdminPage() {
                 ))}
               </ul>
             )}
+          </section>
+
+          <section className="bg-white p-4 sm:p-6 rounded-xl border border-slate-200">
+            <h2 className="text-lg font-semibold text-slate-800 mb-2">Cash receiving (all ships)</h2>
+            <p className="text-slate-600 text-sm mb-4">
+              Each row is money <strong>received by</strong> the ship in &quot;Ship (book)&quot;.
+              <strong> From</strong> is the counterparty (another ship name/login, Office, or free text).
+            </p>
+            {cashReceiving.length === 0 ? (
+              <p className="text-slate-500 text-sm">No cash receiving entries yet.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-slate-100">
+                <table className="w-full text-sm min-w-[640px]">
+                  <thead className="text-left text-slate-500 bg-slate-50">
+                    <tr className="border-b border-slate-200">
+                      <th className="py-2 px-3 font-medium">Date</th>
+                      <th className="py-2 px-3 font-medium">Ship (book)</th>
+                      <th className="py-2 px-3 font-medium">From (counterparty)</th>
+                      <th className="py-2 px-3 font-medium text-right">Amount (AED)</th>
+                      <th className="py-2 px-3 font-medium">Location</th>
+                      <th className="py-2 px-3 font-medium">Remark</th>
+                      <th className="py-2 px-3 font-medium">Posted</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-800 divide-y divide-slate-100">
+                    {cashReceiving.map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50/80">
+                        <td className="py-2 px-3 whitespace-nowrap">{formatCellDate(r.date)}</td>
+                        <td className="py-2 px-3 font-medium">{r.ship_name ?? "—"}</td>
+                        <td className="py-2 px-3 max-w-[200px] truncate" title={r.from_ship ?? ""}>
+                          {r.from_ship?.trim() ? r.from_ship : "—"}
+                        </td>
+                        <td className="py-2 px-3 text-right tabular-nums">{formatAed(r.amount_aed)}</td>
+                        <td className="py-2 px-3 max-w-[140px] truncate" title={r.location ?? ""}>
+                          {r.location?.trim() ? r.location : "—"}
+                        </td>
+                        <td className="py-2 px-3 max-w-[180px] truncate" title={r.remark ?? ""}>
+                          {r.remark?.trim() ? r.remark : "—"}
+                        </td>
+                        <td className="py-2 px-3 text-slate-500 whitespace-nowrap text-xs">
+                          {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="bg-white p-4 sm:p-6 rounded-xl border border-slate-200">
+            <h2 className="text-lg font-semibold text-slate-800 mb-2">Cash discharge (all ships)</h2>
+            <p className="text-slate-600 text-sm mb-4">
+              Each row is money <strong>paid out by</strong> the ship in &quot;Ship (book)&quot;.<strong> To</strong>{" "}
+              is the counterparty.
+            </p>
+            {cashDischarge.length === 0 ? (
+              <p className="text-slate-500 text-sm">No cash discharge entries yet.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-slate-100">
+                <table className="w-full text-sm min-w-[640px]">
+                  <thead className="text-left text-slate-500 bg-slate-50">
+                    <tr className="border-b border-slate-200">
+                      <th className="py-2 px-3 font-medium">Date</th>
+                      <th className="py-2 px-3 font-medium">Ship (book)</th>
+                      <th className="py-2 px-3 font-medium">To (counterparty)</th>
+                      <th className="py-2 px-3 font-medium text-right">Amount (AED)</th>
+                      <th className="py-2 px-3 font-medium">Location</th>
+                      <th className="py-2 px-3 font-medium">Remark</th>
+                      <th className="py-2 px-3 font-medium">Posted</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-800 divide-y divide-slate-100">
+                    {cashDischarge.map((r) => (
+                      <tr key={r.id} className="hover:bg-slate-50/80">
+                        <td className="py-2 px-3 whitespace-nowrap">{formatCellDate(r.date)}</td>
+                        <td className="py-2 px-3 font-medium">{r.ship_name ?? "—"}</td>
+                        <td className="py-2 px-3 max-w-[200px] truncate" title={r.to_ship ?? ""}>
+                          {r.to_ship?.trim() ? r.to_ship : "—"}
+                        </td>
+                        <td className="py-2 px-3 text-right tabular-nums">{formatAed(r.amount_aed)}</td>
+                        <td className="py-2 px-3 max-w-[140px] truncate" title={r.location ?? ""}>
+                          {r.location?.trim() ? r.location : "—"}
+                        </td>
+                        <td className="py-2 px-3 max-w-[180px] truncate" title={r.remark ?? ""}>
+                          {r.remark?.trim() ? r.remark : "—"}
+                        </td>
+                        <td className="py-2 px-3 text-slate-500 whitespace-nowrap text-xs">
+                          {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-slate-500 text-xs mt-3">
+              Showing latest 500 rows per type (same as API). Per-ship white/yellow/cash totals are on the
+              dashboard home.
+            </p>
           </section>
 
           {chartData.length > 0 && (
